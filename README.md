@@ -2,6 +2,23 @@
 
 A Windows-only, single-header C++17 message IPC library derived from [goodtrailer/win-pipe](https://github.com/goodtrailer/win-pipe). ISC licensed; upstream notices are retained. Repository and release history: [SeanShaffer88/win-pipe-revival](https://github.com/SeanShaffer88/win-pipe-revival).
 
+[Download 0.2.0](https://github.com/SeanShaffer88/win-pipe-revival/releases/tag/v0.2.0) · [Header](win-pipe.h) · [PipeLog example](apps/pipelog/README.md) · [ISC license](LICENSE)
+
+## Why this revival exists
+
+Use this library when a Windows C++ application needs small messages between local processes without a separate IPC DLL. This fork focuses on bounded I/O, receiver lifetime, callback failure handling, and reproducible regression coverage.
+
+| Start with | What it gives you |
+| --- | --- |
+| [Minimal sender and receiver](#use) | Copy one header into a C++17 project and exchange a message. |
+| [Delivery contract](#delivery-and-concurrency-contract) | Understand acknowledgements, timeouts, concurrency, and shutdown before integrating. |
+| [PipeLog](apps/pipelog/README.md) | Explore a multi-process JSONL logging consumer with application acknowledgements. |
+| [Revival history](REVIVAL.md) and [review](REVIEW.md) | Trace upstream provenance, repairs, validation, and remaining limits. |
+
+The 0.2.0 release records 24 transport cases and 336 local executions across five MSVC/Clang configurations, plus PipeLog integration. These are recorded release checks, not a claim that every Windows environment is validated. See the [release evidence](https://github.com/SeanShaffer88/win-pipe-revival/releases/tag/v0.2.0).
+
+**Integration essentials:** upgrade both peers together; keep callbacks bounded; add application-level IDs/acknowledgements if your workflow needs retry handling or confirmation that work finished. The transport does not provide durable or exactly-once delivery.
+
 ## Scope and compatibility
 
 - Local named pipes, one receiver per name and multiple concurrent senders.
