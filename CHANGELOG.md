@@ -1,5 +1,15 @@
 # Changes
 
+## 0.2.0 — 2026-10-21
+
+- Deterministic, test-only state/event/pipe/thread/buffer failure injection with cleanup and recovery assertions.
+- Immediate capture of Win32 I/O errors before deadline calculations; preserve partial-completion errors.
+- Include event acquisition in the sender's write budget.
+- PipeLog JSONL collector: real multi-process consumer with application acknowledgements after stream flush.
+- 24 transport cases, five local configurations and PipeLog integration in each configuration.
+- MSVC GitHub CI matrix, scoped code review, authenticated publication and verified release assets.
+- Scope and wire protocol remain as documented for the revival; no compatibility with original upstream peers is claimed.
+
 ## 0.2.0-rc.1 — 2026-10-21
 
 Local revival release candidate based on goodtrailer/win-pipe at

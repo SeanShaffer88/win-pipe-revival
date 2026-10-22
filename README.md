@@ -1,6 +1,6 @@
-# win-pipe revival — 0.2.0-rc.1
+# win-pipe revival — 0.2.0
 
-A Windows-only, single-header C++17 message IPC library derived from [goodtrailer/win-pipe](https://github.com/goodtrailer/win-pipe). ISC licensed; upstream notices are retained. This is a release candidate, not a published stable release.
+A Windows-only, single-header C++17 message IPC library derived from [goodtrailer/win-pipe](https://github.com/goodtrailer/win-pipe). ISC licensed; upstream notices are retained. Repository and release history: [SeanShaffer88/win-pipe-revival](https://github.com/SeanShaffer88/win-pipe-revival).
 
 ## Scope and compatibility
 
@@ -94,7 +94,13 @@ Build products and JSON evidence go under .build/. Each test runs in its own pro
 
 Run two terminals with the built win_pipe_example.exe receiver and win_pipe_example.exe sender. An optional second argument selects the pipe name.
 
-## Release status
+## PipeLog application integration
 
-See REVIVAL.md and RELEASE_CHECKLIST.md for provenance, validation and remaining release gates. The GitHub Actions MSVC matrix is prepared but has not run on a remote repository. No upstream support or endorsement is implied.
+The included [PipeLog](apps/pipelog/README.md) collects messages from multiple local processes into a JSONL file. It uses per-request reply pipes and sends an application acknowledgement after flushing the record. The build script compiles it and tests twelve concurrent client processes, Unicode/JSON escaping, acknowledgements and failure behavior in every configuration.
+
+## Failure tests and release status
+
+The dedicated regression binary defines WIN_PIPE_ENABLE_TEST_FAILURES and injects state/event/pipe/thread/buffer acquisition failures. It checks cleanup, propagation and recovery without exhausting OS resources. Production builds omit those hooks; do not mix instrumented and uninstrumented translation units in one binary.
+
+See REVIVAL.md, REVIEW.md and RELEASE_CHECKLIST.md for provenance, review and the scoped release gates. Exact-commit GitHub CI gates release publication; the GitHub release page records its successful run. No upstream support or endorsement is implied.
 

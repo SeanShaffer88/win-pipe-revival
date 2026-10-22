@@ -5,7 +5,8 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($Repeat -lt 1) { throw 'Repeat must be at least 1.' }
 $cases = @('default','idle','move','connected','move_construct','delivery','multi_sender','processes',
-    'restart','callback','self_stop','limits','stalled','connect_abort','handshake_timeout','busy_timeout','sender_timeout','constructor','unicode')
+    'restart','callback','self_stop','limits','stalled','connect_abort','handshake_timeout','busy_timeout','sender_timeout','constructor','unicode',
+    'event_failure','pipe_failure','thread_failure','state_failure','buffer_failure')
 $results = @()
 foreach ($iteration in 1..$Repeat) {
     foreach ($caseName in $cases) {

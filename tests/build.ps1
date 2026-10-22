@@ -62,10 +62,19 @@ try {
         & $CompilerPath @flags example.cpp -o $exampleExe
     }
     if ($LASTEXITCODE -ne 0) { throw "Example compilation failed: $LASTEXITCODE" }
+    $applicationExe = Join-Path $buildDirectory 'pipelog.exe'
+    if ($Compiler -eq 'msvc') {
+        & $CompilerPath @flags apps/pipelog/main.cpp ("/Fe:$applicationExe") ("/Fo:$buildDirectory/pipelog.obj") ("/Fd:$buildDirectory/pipelog.pdb")
+    } else {
+        & $CompilerPath @flags apps/pipelog/main.cpp -municode -lole32 -o $applicationExe
+    }
+    if ($LASTEXITCODE -ne 0) { throw "PipeLog compilation failed: $LASTEXITCODE" }
     & (Join-Path $PSScriptRoot 'run.ps1') -Executable $exe -Repeat $Repeat -ResultsPath (Join-Path $buildDirectory 'test-results.json')
+    & (Join-Path $PSScriptRoot 'pipelog_integration.ps1') -Application $applicationExe
+    & (Join-Path $PSScriptRoot 'example_smoke.ps1') -Example $exampleExe
     $compilerVersion = if ($Compiler -eq 'msvc') { (Get-Item -LiteralPath $CompilerPath).VersionInfo.FileVersion }
                        else { [string]((& $CompilerPath --version | Select-Object -First 1)) }
-    [ordered]@{compiler=$Compiler;compilerPath=$CompilerPath;compilerVersion=$compilerVersion;architecture=$Architecture;configuration=$Configuration;repeat=$Repeat;headerSha256=(Get-FileHash -LiteralPath 'win-pipe.h').Hash;testSha256=(Get-FileHash -LiteralPath 'tests/receiver_lifetime.cpp').Hash;exampleSha256=(Get-FileHash -LiteralPath 'example.cpp').Hash} |
+    [ordered]@{compiler=$Compiler;compilerPath=$CompilerPath;compilerVersion=$compilerVersion;architecture=$Architecture;configuration=$Configuration;repeat=$Repeat;headerSha256=(Get-FileHash -LiteralPath 'win-pipe.h').Hash;testSha256=(Get-FileHash -LiteralPath 'tests/receiver_lifetime.cpp').Hash;exampleSha256=(Get-FileHash -LiteralPath 'example.cpp').Hash;applicationSha256=(Get-FileHash -LiteralPath 'apps/pipelog/main.cpp').Hash;applicationIntegration=$true;exampleSmoke=$true} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $buildDirectory 'build-info.json') -Encoding UTF8
 } finally { Pop-Location }
 } finally {

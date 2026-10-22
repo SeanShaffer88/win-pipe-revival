@@ -1,3 +1,4 @@
+#define WIN_PIPE_ENABLE_TEST_FAILURES
 #include "../win-pipe.h"
 #include <chrono>
 #include <condition_variable>
@@ -295,6 +296,47 @@ int main(int argc, char** argv) {
             }
             GetProcessHandleCount(GetCurrentProcess(), &after);
             require(after <= before + 1, "failed constructor leaks handles");
+        } else if (mode == "event_failure" || mode == "pipe_failure" ||
+                   mode == "thread_failure" || mode == "state_failure") {
+            using resource = win_pipe::details::resource;
+            const resource kind = mode == "event_failure" ? resource::event :
+                mode == "pipe_failure" ? resource::pipe :
+                mode == "thread_failure" ? resource::thread : resource::state;
+            DWORD before = 0, after = 0;
+            GetProcessHandleCount(GetCurrentProcess(), &before);
+            for (unsigned iteration = 0; iteration < 50; ++iteration) {
+                // Exercise failure of either event, including cleanup of the
+                // first acquired handle when the second acquisition fails.
+                const unsigned nth = kind == resource::event ? iteration % 2 + 1 : 1;
+                win_pipe::details::inject_failure(kind, nth);
+                bool failed = false;
+                try { win_pipe::receiver receiver(name("-fault"), callback); }
+                catch (const std::system_error&) { failed = true; }
+                catch (const std::bad_alloc&) { failed = true; }
+                require(failed, "injected constructor failure not surfaced");
+                win_pipe::receiver replacement(name("-fault"), callback);
+            }
+            GetProcessHandleCount(GetCurrentProcess(), &after);
+            require(after <= before + 2, "constructor failure leaked resources");
+            if (kind == resource::event) {
+                std::atomic<int> count { 0 };
+                win_pipe::receiver receiver(name("-sender-fault"), [&](uint8_t*, size_t) { ++count; });
+                win_pipe::sender sender(name("-sender-fault"));
+                win_pipe::details::inject_failure(resource::event);
+                require(!sender.send("x", 1) && GetLastError() == ERROR_NOT_ENOUGH_MEMORY, "sender event failure");
+                require(sender.send("y", 1), "sender failed to recover after event failure");
+                eventually([&] { return count == 1; });
+            }
+        } else if (mode == "buffer_failure") {
+            std::atomic<int> count { 0 };
+            win_pipe::receiver receiver(name("-buffer-fault"), [&](uint8_t*, size_t) { ++count; });
+            win_pipe::sender sender(name("-buffer-fault"));
+            win_pipe::details::inject_failure(win_pipe::details::resource::buffer);
+            require(!sender.send("x", 1), "allocation failure was acknowledged");
+            eventually([&] { return receiver.last_error() == ERROR_NOT_ENOUGH_MEMORY; });
+            require(count == 0, "allocation-failed payload dispatched");
+            require(sender.send("y", 1), "listener failed to recover after allocation failure");
+            eventually([&] { return count == 1; });
         } else if (mode == "unicode") {
             std::atomic<int> count { 0 };
             const std::string pipe_name = name("-") + "\xc3\xa9-\xe6\xb5\x8b";

@@ -35,7 +35,7 @@
 #include <Windows.h>
 
 namespace win_pipe {
-inline constexpr const char* version = "0.2.0-rc.1";
+inline constexpr const char* version = "0.2.0";
 inline constexpr DWORD default_max_message_size = 1024 * 1024;
 inline constexpr DWORD default_timeout_ms = 5000;
 struct receiver_options {
@@ -44,6 +44,34 @@ struct receiver_options {
 };
 
 namespace details {
+// Deterministic acquisition-boundary faults are compiled into test binaries
+// only. Never mix instrumented and uninstrumented TUs in one program.
+enum class resource { none, event, pipe, thread, state, buffer };
+#ifdef WIN_PIPE_ENABLE_TEST_FAILURES
+inline std::atomic<resource> failed_resource { resource::none };
+inline std::atomic<unsigned> failure_countdown { 0 };
+inline void inject_failure(resource kind, unsigned acquisition = 1) noexcept {
+    failure_countdown = acquisition;
+    failed_resource = kind;
+}
+inline bool fail_resource(resource kind) noexcept {
+    if (failed_resource.load() != kind) return false;
+    if (failure_countdown.fetch_sub(1) != 1) return false;
+    failed_resource = resource::none;
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return true;
+}
+#else
+inline bool fail_resource(resource) noexcept { return false; }
+#endif
+inline HANDLE create_event() noexcept {
+    return fail_resource(resource::event) ? nullptr : CreateEventW(nullptr, TRUE, FALSE, nullptr);
+}
+template<class F> inline std::thread start_thread(F&& function) {
+    if (fail_resource(resource::thread))
+        throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+    return std::thread(std::forward<F>(function));
+}
 struct handle_deleter {
     void operator()(HANDLE h) const noexcept {
         if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h);
@@ -54,7 +82,7 @@ inline void throw_last_error(const char* operation) {
     throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), operation);
 }
 inline unique_handle make_event() {
-    unique_handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    unique_handle event(create_event());
     if (!event) throw_last_error("CreateEvent");
     return event;
 }
@@ -77,15 +105,14 @@ inline std::wstring format_name(std::string_view name) {
 }
 struct io_result { DWORD error; DWORD bytes; };
 // OVERLAPPED, event and buffer must remain alive until cancellation completes.
-inline io_result finish_io(HANDLE pipe, OVERLAPPED& op, BOOL completed,
+inline io_result finish_io(HANDLE pipe, OVERLAPPED& op, DWORD error,
                            DWORD bytes, HANDLE stop, DWORD timeout) noexcept {
-    if (completed) return { ERROR_SUCCESS, bytes };
-    const DWORD error = GetLastError();
+    if (error == ERROR_SUCCESS) return { ERROR_SUCCESS, bytes };
     if (error == ERROR_MORE_DATA) {
         // With overlapped message reads Windows may leave lpNumberOfBytesRead
         // at zero; the completed OVERLAPPED carries the fragment byte count.
-        GetOverlappedResult(pipe, &op, &bytes, FALSE);
-        return { ERROR_MORE_DATA, bytes };
+        const BOOL ok = GetOverlappedResult(pipe, &op, &bytes, FALSE);
+        return { ok ? ERROR_MORE_DATA : GetLastError(), bytes };
     }
     if (error != ERROR_IO_PENDING) return { error, bytes };
     const HANDLE events[] = { stop, op.hEvent };
@@ -124,16 +151,18 @@ public:
         if (!options.read_timeout_ms || options.read_timeout_ms == INFINITE)
             throw std::invalid_argument("Read timeout must be finite and nonzero");
         const auto pipe_name = details::format_name(name);
+        if (details::fail_resource(details::resource::state)) throw std::bad_alloc();
         auto param = std::make_shared<state>();
         param->options = options;
         param->callback = std::move(callback);
+        if (details::fail_resource(details::resource::pipe)) details::throw_last_error("CreateNamedPipe");
         param->pipe.reset(CreateNamedPipeW(pipe_name.c_str(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1, 4096, 4096, 0, nullptr));
         if (param->pipe.get() == INVALID_HANDLE_VALUE) details::throw_last_error("CreateNamedPipe");
         // If thread creation fails, local RAII releases every acquired resource.
-        m_thread = std::thread([param] { run(param); });
+        m_thread = details::start_thread([param] { run(param); });
         m_state = std::move(param);
     }
     receiver(receiver&&) noexcept = default;
@@ -193,7 +222,8 @@ private:
             DWORD bytes = 0;
             const BOOL ok = ReadFile(s.pipe.get(), chunk.data(),
                                     static_cast<DWORD>(chunk.size()), &bytes, &op);
-            const auto result = details::finish_io(s.pipe.get(), op, ok, bytes,
+            const DWORD read_error = ok ? ERROR_SUCCESS : GetLastError();
+            const auto result = details::finish_io(s.pipe.get(), op, read_error, bytes,
                 s.stop.get(), s.options.read_timeout_ms - static_cast<DWORD>(elapsed));
             if (result.error != ERROR_SUCCESS && result.error != ERROR_MORE_DATA) {
                 if (result.error != ERROR_OPERATION_ABORTED && result.error != ERROR_BROKEN_PIPE)
@@ -204,6 +234,7 @@ private:
                 s.error = ERROR_BUFFER_OVERFLOW;
                 return;
             }
+            if (details::fail_resource(details::resource::buffer)) throw std::bad_alloc();
             message.insert(message.end(), chunk.data(), chunk.data() + result.bytes);
             if (result.error == ERROR_MORE_DATA) continue;
             if (stopped(s)) return;
@@ -216,7 +247,8 @@ private:
             ResetEvent(reply.hEvent);
             DWORD transferred = 0;
             const BOOL replied = WriteFile(s.pipe.get(), &acknowledgement, 1, &transferred, &reply);
-            const auto written = details::finish_io(s.pipe.get(), reply, replied, transferred,
+            const DWORD reply_error = replied ? ERROR_SUCCESS : GetLastError();
+            const auto written = details::finish_io(s.pipe.get(), reply, reply_error, transferred,
                                                     s.stop.get(), remaining());
             if (written.error || written.bytes != 1) {
                 s.error = written.error ? written.error : ERROR_WRITE_FAULT;
@@ -228,7 +260,8 @@ private:
             ResetEvent(confirmation.hEvent);
             transferred = 0;
             const BOOL confirmed = ReadFile(s.pipe.get(), &acknowledgement, 1, &transferred, &confirmation);
-            const auto read = details::finish_io(s.pipe.get(), confirmation, confirmed, transferred,
+            const DWORD confirmation_error = confirmed ? ERROR_SUCCESS : GetLastError();
+            const auto read = details::finish_io(s.pipe.get(), confirmation, confirmation_error, transferred,
                                                  s.stop.get(), remaining());
             if (read.error || read.bytes != 1 || acknowledgement != 1) {
                 s.error = read.error ? read.error : ERROR_INVALID_DATA;
@@ -250,7 +283,8 @@ private:
             op.hEvent = s->io_event.get();
             ResetEvent(op.hEvent);
             const BOOL connected = ConnectNamedPipe(s->pipe.get(), &op);
-            const auto result = details::finish_io(s->pipe.get(), op, connected, 0,
+            const DWORD connect_error = connected ? ERROR_SUCCESS : GetLastError();
+            const auto result = details::finish_io(s->pipe.get(), op, connect_error, 0,
                                                    s->stop.get(), INFINITE);
             if (result.error == ERROR_OPERATION_ABORTED) break;
             if (result.error == ERROR_NO_DATA || result.error == ERROR_PIPE_NOT_CONNECTED ||
@@ -312,7 +346,7 @@ public:
         }
         const ULONGLONG elapsed = GetTickCount64() - start;
         if (elapsed >= timeout_ms) { pipe.reset(); SetLastError(ERROR_TIMEOUT); return false; }
-        details::unique_handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        details::unique_handle event(details::create_event());
         if (!event) {
             const DWORD error = GetLastError();
             pipe.reset();
@@ -321,10 +355,15 @@ public:
         }
         OVERLAPPED op {};
         op.hEvent = event.get();
+        const ULONGLONG write_elapsed = GetTickCount64() - start;
+        if (write_elapsed >= timeout_ms) {
+            pipe.reset(); event.reset(); SetLastError(ERROR_TIMEOUT); return false;
+        }
         DWORD bytes = 0;
         const BOOL ok = WriteFile(pipe.get(), buffer, size, &bytes, &op);
-        const auto result = details::finish_io(pipe.get(), op, ok, bytes, nullptr,
-                                              timeout_ms - static_cast<DWORD>(elapsed));
+        const DWORD write_error = ok ? ERROR_SUCCESS : GetLastError();
+        const auto result = details::finish_io(pipe.get(), op, write_error, bytes, nullptr,
+                                              timeout_ms - static_cast<DWORD>(write_elapsed));
         DWORD error = result.error ? result.error :
                       (result.bytes == size ? ERROR_SUCCESS : ERROR_WRITE_FAULT);
         uint8_t acknowledgement = 0;
@@ -337,7 +376,8 @@ public:
                 ResetEvent(op.hEvent);
                 bytes = 0;
                 const BOOL read_ok = ReadFile(pipe.get(), &acknowledgement, 1, &bytes, &op);
-                const auto reply = details::finish_io(pipe.get(), op, read_ok, bytes, nullptr,
+                const DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
+                const auto reply = details::finish_io(pipe.get(), op, read_error, bytes, nullptr,
                                                        timeout_ms - static_cast<DWORD>(spent));
                 error = reply.error ? reply.error :
                         (reply.bytes == 1 && acknowledgement == 1 ? ERROR_SUCCESS : ERROR_INVALID_DATA);
@@ -353,7 +393,8 @@ public:
                 bytes = 0;
                 const uint8_t confirmation = 1;
                 const BOOL write_ok = WriteFile(pipe.get(), &confirmation, 1, &bytes, &op);
-                const auto confirmed = details::finish_io(pipe.get(), op, write_ok, bytes, nullptr,
+                const DWORD confirmation_error = write_ok ? ERROR_SUCCESS : GetLastError();
+                const auto confirmed = details::finish_io(pipe.get(), op, confirmation_error, bytes, nullptr,
                                                           timeout_ms - static_cast<DWORD>(spent));
                 error = confirmed.error ? confirmed.error :
                         (confirmed.bytes == 1 ? ERROR_SUCCESS : ERROR_WRITE_FAULT);
