@@ -28,6 +28,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <iostream>
@@ -96,14 +97,19 @@ public:
 
     ~receiver()
     {
-        if (m_param)
-            SetEvent(m_param->event.get());
-
-        CancelSynchronousIo(m_thread.get());
-        WaitForSingleObject(m_thread.get(), INFINITE);
+        stop();
     }
 
-    receiver& operator=(receiver&&) noexcept = default;
+    receiver& operator=(receiver&& other) noexcept
+    {
+        if (this != &other) {
+            // Stop the old worker before releasing the state it is using.
+            stop();
+            m_param = std::move(other.m_param);
+            m_thread = std::move(other.m_thread);
+        }
+        return *this;
+    }
 
     void set_callback(callback_t callback)
     {
@@ -115,6 +121,24 @@ public:
     }
 
 private:
+    void stop() noexcept
+    {
+        if (!m_param)
+            return;
+
+        SetEvent(m_param->event.get());
+        if (m_thread) {
+            // Cancellation only affects an I/O request already pending. Retry
+            // while joining, covering a worker entering ConnectNamedPipe or
+            // ReadFile just after an earlier cancellation attempt.
+            do {
+                CancelSynchronousIo(m_thread.get());
+            } while (WaitForSingleObject(m_thread.get(), 10) == WAIT_TIMEOUT);
+        }
+        m_thread.reset();
+        m_param.reset();
+    }
+
     static DWORD WINAPI thread(LPVOID lp)
     {
         auto* param = reinterpret_cast<thread_param*>(lp);
