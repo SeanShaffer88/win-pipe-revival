@@ -12,13 +12,15 @@ jobs:
         arch: [x64, x86]
         configuration: [Release, Debug]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Build and test
         shell: pwsh
         run: ./tests/build.ps1 -Compiler msvc -Architecture '${{ matrix.arch }}' -Configuration '${{ matrix.configuration }}'
       - name: Preserve test evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: msvc-${{ matrix.arch }}-${{ matrix.configuration }}
           include-hidden-files: true
