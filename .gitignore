@@ -1,4 +1,5 @@
 # Build stuffs
+/.build/
 *.obj
 *.lib
 *.dll

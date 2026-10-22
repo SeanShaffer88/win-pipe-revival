@@ -1,0 +1,29 @@
+name: Windows regression tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  msvc:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+        configuration: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and test
+        shell: pwsh
+        run: ./tests/build.ps1 -Compiler msvc -Architecture '${{ matrix.arch }}' -Configuration '${{ matrix.configuration }}'
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: msvc-${{ matrix.arch }}-${{ matrix.configuration }}
+          include-hidden-files: true
+          path: |
+            .build/**/test-results.json
+            .build/**/build-info.json
+          if-no-files-found: warn
+

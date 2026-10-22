@@ -1,121 +1,44 @@
 #include "win-pipe.h"
-
-#include <array>
-#include <chrono>
 #include <iostream>
 
-void run_receiver();
-void receiver_callback1(uint8_t* data, size_t size);
-void receiver_callback2(uint8_t* data, size_t size);
-void run_sender();
-
-int main(int argc, void** argv)
-{    
-    if (argc < 2) {
-        std::cout << "Specify sender/receiver." << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    const char* arg1 = reinterpret_cast<const char*>(argv[1]);
-
-    if (strcmp(arg1, "receiver") == 0)
-        run_receiver();
-
-    else if (strcmp(arg1, "sender") == 0)
-        run_sender();
-
-    else {
-        std::cout << "Unrecognized arg, must be sender/receiver." << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    return EXIT_SUCCESS;
-}
-
-void run_receiver()
-{
-    std::cout << "Type callback to change behavior. Type exit to quit." << std::endl;
-    
-    int current_callback = 0;
-    win_pipe::callback_t callbacks[2] { receiver_callback1, receiver_callback2 };
-
-    std::unordered_map<int, win_pipe::receiver> map;
-    map[0] = win_pipe::receiver { "win-pipe_example", callbacks[current_callback] };
-
-    std::string op;
-    while (true) {
-        std::getline(std::cin, op);
-        if (op == "callback") {
-            current_callback++;
-            map[0].set_callback(callbacks[current_callback % 2]);
+int main(int argc, char** argv) {
+    try {
+        if (argc < 2 || argc > 3) {
+            std::cerr << "Usage: win_pipe_example receiver|sender [pipe-name]\n";
+            return 2;
         }
-        else if (op == "exit")
-            break;
+        const std::string mode = argv[1];
+        const std::string pipe_name = argc == 3 ? argv[2] : "win-pipe_example";
+        if (mode == "receiver") {
+            win_pipe::receiver receiver(pipe_name, [](uint8_t* data, size_t size) {
+                std::cout << "Received " << size << " bytes: ";
+                if (size) std::cout.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+                std::cout << '\n' << std::flush;
+            });
+            std::cout << "Listening. Press Enter to stop.\n";
+            std::string line;
+            std::getline(std::cin, line);
+            receiver.stop();
+        } else if (mode == "sender") {
+            win_pipe::sender sender(pipe_name);
+            std::cout << "Enter messages; close input to quit.\n";
+            std::string line;
+            while (std::getline(std::cin, line)) {
+                if (line.size() > win_pipe::default_max_message_size) {
+                    std::cerr << "Message exceeds default limit.\n";
+                    continue;
+                }
+                if (!sender.send(line.data(), static_cast<DWORD>(line.size())))
+                    std::cerr << "Send failed: " << GetLastError() << '\n';
+            }
+        } else {
+            std::cerr << "Expected receiver or sender.\n";
+            return 2;
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
     }
 }
 
-void receiver_callback1(uint8_t* data, [[maybe_unused]] size_t size)
-{
-    using namespace std::chrono;
-
-    static int count = 0;
-    int oldCount = count;
-    count++;
-
-    auto end = high_resolution_clock::now();
-
-    if (oldCount % 2 == 0)
-    {
-        auto* start = reinterpret_cast<decltype(end)*>(data);
-        auto latency = duration_cast<nanoseconds>(end - *start);
-        std::cout << "latency: " << latency.count() << "ns\n";
-    }
-    else
-    {
-        auto* message = reinterpret_cast<const char*>(data);
-        std::cout << message << std::endl;
-    }
-}
-
-void receiver_callback2([[maybe_unused]] uint8_t* data, size_t size)
-{
-    using namespace std::chrono;
-
-    static int count = 0;
-    int oldCount = count;
-    count++;
-
-    auto end = high_resolution_clock::now();
-
-    if (oldCount % 2 == 0)
-    {
-        auto* start = reinterpret_cast<decltype(end)*>(data);
-        auto latency = duration_cast<nanoseconds>(end - *start);
-        std::cout << "latency: " << latency.count() << "ns\n";
-    }
-    else
-    {
-        std::cout << "received a message " << size << " bytes long!\n";
-    }
-}
-
-void run_sender()
-{
-    using namespace std::chrono;
-
-    std::cout << "Send messages to the receiver! Type exit to quit." << std::endl;
-
-    auto sender = win_pipe::sender { "win-pipe_example" };
-
-    std::string message;
-    while (true) {
-        std::getline(std::cin, message);
-        auto start = high_resolution_clock::now();
-
-        sender.send(&start, sizeof(decltype(start)));
-        sender.send(message.c_str(), (DWORD)message.length() + 1);
-
-        if (message == "exit")
-            break;
-    }
-}
